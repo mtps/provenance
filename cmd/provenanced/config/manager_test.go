@@ -35,11 +35,11 @@ func (s *ConfigManagerTestSuite) SetupTest() {
 }
 
 // makeDummyCmd creates a dummy command with a context in it that can be used to test all the manager stuff.
-func (s *ConfigManagerTestSuite) makeDummyCmd() *cobra.Command {
+func makeDummyCmd(home string) (*cobra.Command, error) {
 	encodingConfig := simapp.MakeTestEncodingConfig()
 	clientCtx := client.Context{}.
 		WithCodec(encodingConfig.Marshaler).
-		WithHomeDir(s.Home)
+		WithHomeDir(home)
 	clientCtx.Viper = viper.New()
 	serverCtx := server.NewContext(clientCtx.Viper, tmconfig.DefaultConfig(), log.NewNopLogger())
 
@@ -57,9 +57,12 @@ func (s *ConfigManagerTestSuite) makeDummyCmd() *cobra.Command {
 	dummyCmd.SetOut(ioutil.Discard)
 	dummyCmd.SetErr(ioutil.Discard)
 	dummyCmd.SetArgs([]string{})
-	var err error
-	dummyCmd, err = dummyCmd.ExecuteContextC(ctx)
-	s.Require().NoError(err, "dummy command execution")
+	return dummyCmd.ExecuteContextC(ctx)
+}
+
+func (s *ConfigManagerTestSuite) makeDummyCmd() *cobra.Command {
+	dummyCmd, err := makeDummyCmd(s.Home)
+	s.Require().NoError(err, "dummy command setup")
 	return dummyCmd
 }
 
