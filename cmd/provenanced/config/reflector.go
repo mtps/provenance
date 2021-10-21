@@ -140,11 +140,11 @@ func (m FieldValueMap) GetSortedKeys() []string {
 // First, if the key doesn't end in a period, an exact entry match is looked for.
 // If such an entry is found, only that entry will be returned.
 // If no such entry is found, a period is added to the end of the key (if not already there).
+// Then, all entries with keys that start with the desired key are returned.
 // E.g. Providing "filter_peers" will get just the "filter_peers" entry.
 // Providing "consensus." will bypass the exact key lookup, and return all fields that start with "consensus.".
 // Providing "consensus" will look first for a field specifically called "consensus",
 // then, if/when not found, will return all fields that start with "consensus.".
-// Then, all entries with keys that start with the desired key are returned.
 // The second return value indicates whether or not anything was found.
 func (m FieldValueMap) FindEntries(key string) (FieldValueMap, bool) {
 	rv := FieldValueMap{}
@@ -169,6 +169,7 @@ func (m FieldValueMap) FindEntries(key string) (FieldValueMap, bool) {
 
 // GetStringOf gets a string representation of the value with the given key.
 // If the key doesn't exist in this FieldValueMap, an empty string is returned.
+// See GetStringFromValue for more info on the output.
 func (m FieldValueMap) GetStringOf(key string) string {
 	if v, ok := m[key]; ok {
 		return GetStringFromValue(v)
@@ -177,10 +178,11 @@ func (m FieldValueMap) GetStringOf(key string) string {
 }
 
 // GetStringFromValue gets a string of the given value.
-// This creates strings that are more in line with what the values look like in the config files.
-// For slices and arrays, it turns into `["a", "b", "c"]`.
-// For strings, it turns into `"a"`.
-// For anything else, it just uses fmt %v.
+// This creates strings that are generally in line with what the values look like in the config files.
+// Slices and arrays are json formatted, e.g. `["a", "b", "c"]`, or `[100, 200, 300]`.
+// Strings are wrapped in quotes, e.g `"a"`. An empty string becomes `""`.
+// time.Duration entries are formatted and quoted, e.g. `"300ms"`.
+// Anything else is converted to a string using fmt and %v, but not quoted, e.g. int 30 becomes `30`.
 // This wasn't designed with the following kinds in mind:
 //    Invalid, Chan, Func, Interface, Map, Ptr, Struct, or UnsafePointer.
 func GetStringFromValue(v reflect.Value) string {
