@@ -120,7 +120,7 @@ func MigratePackedConfigToTM35IfNeeded(cmd *cobra.Command, packedConf map[string
 	needUpdate := false
 	for key := range packedConf {
 		newKey := getNewKey(key)
-		if len(newKey) > 0 || key != newKey {
+		if len(newKey) == 0 || key != newKey {
 			needUpdate = true
 			break
 		}
