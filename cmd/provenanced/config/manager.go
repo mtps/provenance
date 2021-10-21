@@ -192,32 +192,14 @@ func writeUnpackedConfig(
 	}
 }
 
+// writeUnpackedAppConfigFile writes the app config to the provide path.
+// If verbose is true, statements will be printed before and after writing the file.
 func writeUnpackedAppConfigFile(cmd *cobra.Command, path string, config *serverconfig.Config, verbose bool) {
 	if verbose {
 		cmd.Printf("Writing app config to: %s ... ", path)
 	}
 	serverconfig.WriteConfigFile(path, config)
 	appConfigIndexEventsWorkAround(path, config)
-	if verbose {
-		cmd.Printf("Done.\n")
-	}
-}
-
-func writeUnpackedTMConfigFile(cmd *cobra.Command, path string, config *tmconfig.Config, verbose bool) {
-	if verbose {
-		cmd.Printf("Writing tendermint config to: %s ... ", path)
-	}
-	tmconfig.WriteConfigFile(path, config)
-	if verbose {
-		cmd.Printf("Done.\n")
-	}
-}
-
-func writeUnpackedClientConfigFile(cmd *cobra.Command, path string, config *ClientConfig, verbose bool) {
-	if verbose {
-		cmd.Printf("Writing client config to: %s ... ", path)
-	}
-	WriteConfigToFile(path, config)
 	if verbose {
 		cmd.Printf("Done.\n")
 	}
@@ -254,6 +236,30 @@ func appConfigIndexEventsWorkAround(configFilePath string, config *serverconfig.
 	werr := os.WriteFile(configFilePath, fixedFileBz, 0644)
 	if werr != nil {
 		panic(fmt.Errorf("writing fixec app config: %v", werr))
+	}
+}
+
+// writeUnpackedTMConfigFile writes the tendermint config to the provided path.
+// If verbose is true, statements will be printed before and after writing the file.
+func writeUnpackedTMConfigFile(cmd *cobra.Command, path string, config *tmconfig.Config, verbose bool) {
+	if verbose {
+		cmd.Printf("Writing tendermint config to: %s ... ", path)
+	}
+	tmconfig.WriteConfigFile(path, config)
+	if verbose {
+		cmd.Printf("Done.\n")
+	}
+}
+
+// writeUnpackedClientConfigFile writes the client config to the provided path.
+// If verbose is true, statements will be printed before and after writing the file.
+func writeUnpackedClientConfigFile(cmd *cobra.Command, path string, config *ClientConfig, verbose bool) {
+	if verbose {
+		cmd.Printf("Writing client config to: %s ... ", path)
+	}
+	WriteConfigToFile(path, config)
+	if verbose {
+		cmd.Printf("Done.\n")
 	}
 }
 
