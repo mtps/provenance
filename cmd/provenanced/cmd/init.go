@@ -103,7 +103,7 @@ func Init(
 	}
 	tmConfig.Moniker = moniker
 	if len(chainID) == 0 {
-		chainID = "provenance-chain-" + tmrand.NewRand().Str(6)
+		chainID = "provenance-chain-" + tmrand.Str(6)
 		cmd.Printf("chain id: %s\n", chainID)
 	}
 	clientConfig.ChainID = chainID
