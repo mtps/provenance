@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +13,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
+
+	v34config "github.com/provenance-io/provenance/cmd/provenanced/config/legacy/tendermint_0_34/config"
+	// TODO: Once Tendermint v0.35 is fully pulled in, replace this with: tmconfig "github.com/tendermint/tendermint/config"
+	v35config "github.com/provenance-io/provenance/cmd/provenanced/config/legacy/tendermint_0_35/config"
 )
 
 type ConfigMigrationsTestSuite struct {
@@ -35,6 +40,23 @@ func (s *ConfigMigrationsTestSuite) makeDummyCmd() *cobra.Command {
 	dummyCmd, err := makeDummyCmd(s.Home)
 	s.Require().NoError(err, "dummy command setup")
 	return dummyCmd
+}
+
+func addTxIndexPsqlConnLineToConfig(t *testing.T, path, value string) {
+	oldBz, err := os.ReadFile(path)
+	require.NoError(t, err, "reading config file for update")
+	lineAdded := false
+	var newFile strings.Builder
+	for _, line := range strings.Split(string(oldBz), "\n") {
+		newFile.WriteString(line)
+		newFile.WriteByte('\n')
+		if !lineAdded && strings.HasPrefix(line, "[tx_index]") {
+			newFile.WriteString(fmt.Sprintf("\npsql-conn = \"%s\"\n", value))
+			lineAdded = true
+		}
+	}
+	require.True(t, lineAdded, "tx_index.psql-conn line added")
+	require.NoError(t, os.WriteFile(path, []byte(newFile.String()), 0644))
 }
 
 func (s *ConfigMigrationsTestSuite) TestUniqueKeyEntries() {
@@ -62,7 +84,175 @@ func (s *ConfigMigrationsTestSuite) TestUniqueKeyEntries() {
 	}
 }
 
-// TODO: Test MigrateUnpackedTMConfigTo35IfNeeded
+func (s *ConfigMigrationsTestSuite) TestMigrateUnpackedTMConfigTo35IfNeeded() {
+	dummyCmd := s.makeDummyCmd()
+	confFile := GetFullPathToTmConf(dummyCmd)
+
+	touchConf := func(t *testing.T) {
+		_, err := os.Stat(confFile)
+		switch {
+		case os.IsNotExist(err):
+			require.NoError(t, os.WriteFile(confFile, []byte{}, 0644), "creating empty config file")
+		case err != nil:
+			require.NoError(t, err, "conf file stat")
+		default:
+			require.NoError(t, os.Chtimes(confFile, time.Now(), time.Now()), "chtimes config file")
+		}
+	}
+	tests := []struct {
+		name string
+		test func(t *testing.T)
+	}{
+		{
+			name: "config file does not exist",
+			test: func(t *testing.T) {
+				vpr := viper.New()
+				require.NoError(t, MigrateUnpackedTMConfigTo35IfNeeded(dummyCmd, vpr), "calling MigrateUnpackedTMConfigTo35IfNeeded")
+				confFileExists := FileExists(confFile)
+				assert.False(t, confFileExists, "confFileExists")
+			},
+		},
+		{
+			name: "config is new version",
+			test: func(t *testing.T) {
+				conf := v35config.DefaultConfig()
+				conf.LogFormat = "json"
+				conf.LogLevel = "debug"
+				conf.Moniker = t.Name()
+
+				// Write an initial config and load it into viper.
+				v35config.WriteConfigFile(s.Home, conf)
+				vpr := viper.New()
+				vpr.SetConfigFile(confFile)
+				require.NoError(t, vpr.ReadInConfig(), "reading config into viper")
+
+				// Now, delete the config file.
+				// This makes it easy to tell if MigrateUnpackedTMConfigTo35IfNeeded thought it needed migrating.
+				require.NoError(t, deleteConfigFile(dummyCmd, confFile, false), "deleting config file")
+
+				require.NoError(t, MigrateUnpackedTMConfigTo35IfNeeded(dummyCmd, vpr), "calling MigrateUnpackedTMConfigTo35IfNeeded")
+
+				confExists := FileExists(confFile)
+				assert.False(t, confExists, "confExists")
+			},
+		},
+		{
+			name: "viper has just fast_sync - file is created",
+			test: func(t *testing.T) {
+				touchConf(t)
+				vpr := viper.New()
+				vpr.Set("fast_sync", false)
+
+				require.NoError(t, MigrateUnpackedTMConfigTo35IfNeeded(dummyCmd, vpr), "calling MigrateUnpackedTMConfigTo35IfNeeded")
+
+				confExists := FileExists(confFile)
+				assert.True(t, confExists, "confExists")
+			},
+		},
+		{
+			name: "viper has just fast_sync - ends up with other stuff",
+			test: func(t *testing.T) {
+				shouldHaveKeys := []string{
+					"blocksync.enable", "mode", "consensus.create-empty-blocks", "mempool.ttl-duration", "moniker",
+				}
+
+				shouldNotHaveKeys := []string{
+					"p2p.seed_mode", "consensus.create_empty_blocks", "mempool.ttl_duration",
+				}
+
+				touchConf(t)
+				vpr := viper.New()
+				vpr.Set("fast_sync", true)
+
+				require.NoError(t, MigrateUnpackedTMConfigTo35IfNeeded(dummyCmd, vpr), "calling MigrateUnpackedTMConfigTo35IfNeeded")
+
+				for _, key := range shouldHaveKeys {
+					actual := vpr.Get(key)
+					assert.NotNil(t, actual, "vpr.Get(\"%s\")", key)
+				}
+
+				for _, key := range shouldNotHaveKeys {
+					actual := vpr.Get(key)
+					assert.Nil(t, actual, "vpr.Get(\"%s\")", key)
+				}
+			},
+		},
+		{
+			name: "special cases migrate expectedly",
+			test: func(t *testing.T) {
+				expected := map[string]interface{}{
+					"blocksync.enable": true,
+					"blocksync.version": "v8",
+					"priv-validator.key-file": "/some/priv-key",
+					"priv-validator.laddr": "127.0.0.1:888",
+					"priv-validator.state-file": "/some/state-file",
+					"mode": "seed",
+					"statesync.fetchers": int32(5),
+					"tx-index.psql-conn": "127.0.0.1:5432",
+					"tx-index.indexer": []string{"yellow"},
+				}
+				expectedKeys := make([]string, 0, len(expected))
+				for key := range expected {
+					expectedKeys = append(expectedKeys, key)
+				}
+				sortKeys(expectedKeys)
+
+				checkConf := func(label string, conf *v35config.Config) {
+					assert.Equal(t, expected["blocksync.enable"], conf.BlockSync.Enable, "%s blocksync.enable", label)
+					assert.Equal(t, expected["blocksync.version"], conf.BlockSync.Version, "%s blocksync.version", label)
+					assert.Equal(t, expected["priv-validator.key-file"], conf.PrivValidator.Key, "%s priv-validator.key-file", label)
+					assert.Equal(t, expected["priv-validator.laddr"], conf.PrivValidator.ListenAddr, "%s priv-validator.laddr", label)
+					assert.Equal(t, expected["priv-validator.state-file"], conf.PrivValidator.State, "%s priv-validator.state-file", label)
+					assert.Equal(t, expected["mode"], conf.Mode, "%s mode", label)
+					assert.Equal(t, expected["statesync.fetchers"], conf.StateSync.Fetchers, "%s statesync.fetchers", label)
+					assert.Equal(t, expected["tx-index.psql-conn"], conf.TxIndex.PsqlConn, "%s tx-index.psql-conn", label)
+					assert.Equal(t, expected["tx-index.indexer"], conf.TxIndex.Indexer, "%s tx-index.indexer", label)
+				}
+
+				oldConf := v34config.DefaultConfig()
+				oldConf.FastSyncMode = expected["blocksync.enable"].(bool)
+				oldConf.FastSync.Version = expected["blocksync.version"].(string)
+				oldConf.PrivValidatorKey = expected["priv-validator.key-file"].(string)
+				oldConf.PrivValidatorListenAddr = expected["priv-validator.laddr"].(string)
+				oldConf.PrivValidatorState = expected["priv-validator.state-file"].(string)
+				oldConf.P2P.SeedMode = true
+				oldConf.StateSync.ChunkFetchers = expected["statesync.fetchers"].(int32)
+				oldConf.TxIndex.PsqlConn = expected["tx-index.psql-conn"].(string)
+				oldConf.TxIndex.Indexer = expected["tx-index.indexer"].([]string)[0]
+				v34config.WriteConfigFile(confFile, oldConf)
+				addTxIndexPsqlConnLineToConfig(t, confFile, oldConf.TxIndex.PsqlConn)
+
+				vpr := viper.New()
+				vpr.SetConfigFile(confFile)
+				require.NoError(t, vpr.ReadInConfig(), "reading config into viper")
+				require.NotNil(t, vpr.Get("fast_sync"), "setup error: config loaded into viper does ot have a fast_sync entry")
+
+				require.NoError(t, MigrateUnpackedTMConfigTo35IfNeeded(dummyCmd, vpr), "calling MigrateUnpackedTMConfigTo35IfNeeded")
+
+				freshConf := v35config.DefaultConfig()
+				require.NoError(t, vpr.Unmarshal(freshConf), "unmarshalling fresh conf")
+				checkConf("immediately after migrate", freshConf)
+
+				// Clear out viper, and reload the file to make sure the file is the new version.
+				vpr = viper.New()
+				vpr.SetConfigFile(confFile)
+				require.NoError(t, vpr.ReadInConfig(), "reading config into viper")
+				require.Nil(t, vpr.Get("fast_sync"), "vpr.Get(\"fast_sync\")")
+
+				newConf := v35config.DefaultConfig()
+				require.NoError(t, vpr.Unmarshal(newConf), "unmarshalling new conf")
+				checkConf("after file load", newConf)
+			},
+		},
+	}
+
+	s.Require().NoError(EnsureConfigDir(dummyCmd), "ensuring config dir")
+	s.Require().NoError(deleteConfigFile(dummyCmd, confFile, false), "deleting config file at start")
+	for _, tc := range tests {
+		s.T().Run(tc.name, tc.test)
+		s.Require().NoError(deleteConfigFile(dummyCmd, confFile, false), "deleting config file after %s", tc.name)
+	}
+}
 
 func (s *ConfigMigrationsTestSuite) TestMigratePackedConfigToTM35IfNeeded() {
 	dummyCmd := s.makeDummyCmd()
@@ -133,18 +323,18 @@ func (s *ConfigMigrationsTestSuite) TestMigratePackedConfigToTM35IfNeeded() {
 		{
 			name:     "underscores to dashes",
 			conf:     map[string]string{
-				"log_format": "plain",
+				"log_format": "json",
 				"log_level": "debug",
 			},
 			expected: map[string]string{
-				"log-format": "plain",
+				"log-format": "json",
 				"log-level": "debug",
 			},
 		},
 		{
 			name:     "all special cases",
 			conf:     map[string]string{
-				"fast_sync": "true",
+				"fast_sync": "false",
 				"fastsync.version": "v8",
 				"priv_validator_key_file": "/some/priv-key",
 				"priv_validator_laddr": "127.0.0.1:888",
@@ -155,7 +345,7 @@ func (s *ConfigMigrationsTestSuite) TestMigratePackedConfigToTM35IfNeeded() {
 				"tx_index.indexer": "yellow",
 			},
 			expected: map[string]string{
-				"blocksync.enable": "true",
+				"blocksync.enable": "false",
 				"blocksync.version": "v8",
 				"priv-validator.key-file": "/some/priv-key",
 				"priv-validator.laddr": "127.0.0.1:888",
@@ -164,6 +354,16 @@ func (s *ConfigMigrationsTestSuite) TestMigratePackedConfigToTM35IfNeeded() {
 				"statesync.fetchers": "5",
 				"tx-index.psql-conn": "127.0.0.1:5432",
 				"tx-index.indexer": `["yellow"]`,
+			},
+		},
+		{
+			name:     "default value removed",
+			conf:     map[string]string{
+				"log_format": v35config.DefaultConfig().LogFormat,
+				"log_level": "debug",
+			},
+			expected: map[string]string{
+				"log-level": "debug",
 			},
 		},
 	}
@@ -261,111 +461,6 @@ func (s *ConfigMigrationsTestSuite) TestGetOldKey() {
 			actual := getOldKey(tc.newKey)
 			assert.Equal(t, tc.expected, actual)
 		})
-	}
-}
-
-func (s *ConfigMigrationsTestSuite) TestGetValueStringFromViper() {
-
-	type testCase struct {
-		name string
-		value interface{}
-		expected string
-	}
-	tests := []struct {
-		keys []string
-		cases []testCase
-	}{
-		{
-			keys:  []string{"statesync.rpc-servers", "statesync.rpc_servers"},
-			cases: []testCase{
-				{
-					name:     "empty string",
-					value:    "",
-					expected: `[]`,
-				},
-				{
-					name:     "one entry",
-					value:    "banana",
-					expected: `["banana"]`,
-				},
-				{
-					name:     "four entries",
-					value:    "apple, orange, peach, grape",
-					expected: `["apple", "orange", "peach", "grape"]`,
-				},
-			},
-		},
-		{
-			keys:  []string{
-				"rpc.cors-allowed-headers", "rpc.cors-allowed-methods", "rpc.cors-allowed-origins", "tx-index.indexer",
-				"rpc.cors_allowed_headers", "rpc.cors_allowed_methods", "rpc.cors_allowed_origins", "tx_index.indexer",
-			},
-			cases: []testCase{
-				{
-					name:     "empty",
-					value:    []interface{}{},
-					expected: `[]`,
-				},
-				{
-					name:     "one entry",
-					value:    []interface{}{"penny"},
-					expected: `["penny"]`,
-				},
-				{
-					name:     "four entries",
-					value:    []interface{}{"nickle", "dime", "quarter", "looney"},
-					expected: `["nickle", "dime", "quarter", "looney"]`,
-				},
-			},
-		},
-		{
-			keys:  []string{"non-special", "normal"},
-			cases: []testCase{
-				{
-					name:     "empty string",
-					value:    "",
-					expected: "",
-				},
-				{
-					name:     "filled string",
-					value:    "filled",
-					expected: "filled",
-				},
-				{
-					name:     "number",
-					value:    88,
-					expected: "88",
-				},
-				{
-					name:     "bool true",
-					value:    true,
-					expected: "true",
-				},
-				{
-					name:     "bool false",
-					value:    false,
-					expected: "false",
-				},
-				{
-					name:     "time.Duration",
-					value:    time.Duration(800) * time.Millisecond,
-					expected: "800ms",
-				},
-			},
-		},
-	}
-
-	for _, tg := range tests {
-		for _, key := range tg.keys {
-			for _, tc := range tg.cases {
-				s.T().Run(fmt.Sprintf("%s %s", key, tc.name), func(t *testing.T) {
-					vpr := viper.New()
-					vpr.Set(key, tc.value)
-					actual := getValueStringFromViper(vpr, key)
-					assert.Equal(t, tc.expected, actual)
-				})
-			}
-		}
 	}
 }
 
