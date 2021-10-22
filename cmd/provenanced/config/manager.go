@@ -114,7 +114,7 @@ func ExtractTmConfigAndMap(cmd *cobra.Command) (*tmconfig.Config, FieldValueMap,
 func removeUndesirableTmConfigEntries(fields FieldValueMap) FieldValueMap {
 	delete(fields, "home")
 	for k := range fields {
-		if (len(k) > 5 && k[len(k)-5:] == ".home") || (len(k) > 8 && k[:8] == "p2p.test") || k == "other" {
+		if k == "other" || strings.HasSuffix(k, ".home") || strings.HasPrefix(k, "p2p.test") {
 			delete(fields, k)
 		}
 	}
