@@ -1,12 +1,16 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 )
 
@@ -25,6 +29,12 @@ func TestConfigMigrationsTestSuite(t *testing.T) {
 func (s *ConfigMigrationsTestSuite) SetupTest() {
 	s.Home = s.T().TempDir()
 	s.T().Logf("%s Home: %s", s.T().Name(), s.Home)
+}
+
+func (s *ConfigMigrationsTestSuite) makeDummyCmd() *cobra.Command {
+	dummyCmd, err := makeDummyCmd(s.Home)
+	s.Require().NoError(err, "dummy command setup")
+	return dummyCmd
 }
 
 func (s *ConfigMigrationsTestSuite) TestUniqueKeyEntries() {
@@ -53,7 +63,126 @@ func (s *ConfigMigrationsTestSuite) TestUniqueKeyEntries() {
 }
 
 // TODO: Test MigrateUnpackedTMConfigTo35IfNeeded
-// TODO: Test MigratePackedConfigToTM35IfNeeded
+
+func (s *ConfigMigrationsTestSuite) TestMigratePackedConfigToTM35IfNeeded() {
+	dummyCmd := s.makeDummyCmd()
+	s.Require().NoError(EnsureConfigDir(dummyCmd), "ensuring config dir")
+
+	copyConf := func(conf map[string]string) map[string]string {
+		rv := map[string]string{}
+		for k, v := range conf {
+			rv[k] = v
+		}
+		return rv
+	}
+
+	s.T().Run("empty", func(t *testing.T) {
+		conf := map[string]string{}
+		orig := copyConf(conf)
+		MigratePackedConfigToTM35IfNeeded(dummyCmd, conf)
+		packedFileExists := FileExists(GetFullPathToPackedConf(dummyCmd))
+		assert.False(t, packedFileExists, "packedFileExists")
+		assert.Equal(t, orig, conf, "pre and post configs")
+	})
+
+	s.T().Run("without changing entries", func(t *testing.T) {
+		conf := map[string]string{
+			// Two entries from the client config.
+			"chain-id": "testing",
+			"output": "json",
+			// Two entries from the app config.
+			"grpc-web.enable-unsafe-cors": "true",
+			"rosetta.retries": "8",
+			// Two unchanging entries from tendermint config.
+			"rpc.unsafe": "true",
+			"mempool.size": "6000",
+		}
+		orig := copyConf(conf)
+		MigratePackedConfigToTM35IfNeeded(dummyCmd, conf)
+		packedFileExists := FileExists(GetFullPathToPackedConf(dummyCmd))
+		assert.False(t, packedFileExists, "packedFileExists")
+		assert.Equal(t, orig, conf, "pre and post configs")
+	})
+
+	s.T().Run("only an added key", func(t *testing.T) {
+		conf := map[string]string{
+			"p2p.max-connections": "5",
+		}
+		orig := copyConf(conf)
+		MigratePackedConfigToTM35IfNeeded(dummyCmd, conf)
+		packedFileExists := FileExists(GetFullPathToPackedConf(dummyCmd))
+		assert.False(t, packedFileExists, "packedFileExists")
+		assert.Equal(t, orig, conf, "pre and post configs")
+	})
+
+	// Just to make sure it's not there.
+	s.Require().NoError(deletePackedConfig(dummyCmd, false), "deleting packed config")
+
+	tests := []struct{
+		name string
+		conf map[string]string
+		expected map[string]string
+	}{
+		{
+			name:     "removed key is removed",
+			conf:     map[string]string{
+				"mempool.wal_dir": "/a/b/c",
+			},
+			expected: map[string]string{},
+		},
+		{
+			name:     "underscores to dashes",
+			conf:     map[string]string{
+				"log_format": "plain",
+				"log_level": "debug",
+			},
+			expected: map[string]string{
+				"log-format": "plain",
+				"log-level": "debug",
+			},
+		},
+		{
+			name:     "all special cases",
+			conf:     map[string]string{
+				"fast_sync": "true",
+				"fastsync.version": "v8",
+				"priv_validator_key_file": "/some/priv-key",
+				"priv_validator_laddr": "127.0.0.1:888",
+				"priv_validator_state_file": "/some/state-file",
+				"p2p.seed_mode": "true",
+				"statesync.chunk_fetchers": "5",
+				"tx_index.psql-conn": "127.0.0.1:5432",
+				"tx_index.indexer": "yellow",
+			},
+			expected: map[string]string{
+				"blocksync.enable": "true",
+				"blocksync.version": "v8",
+				"priv-validator.key-file": "/some/priv-key",
+				"priv-validator.laddr": "127.0.0.1:888",
+				"priv-validator.state-file": "/some/state-file",
+				"mode": "seed",
+				"statesync.fetchers": "5",
+				"tx-index.psql-conn": "127.0.0.1:5432",
+				"tx-index.indexer": `["yellow"]`,
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		s.T().Run(tc.name, func(t *testing.T) {
+			MigratePackedConfigToTM35IfNeeded(dummyCmd, tc.conf)
+			assert.Equal(t, tc.expected, tc.conf, "post-migrate config")
+			confFile := GetFullPathToPackedConf(dummyCmd)
+			jsonFromFile, err := os.ReadFile(confFile)
+			require.NoError(t, err, "reading packed config file.")
+			confFromFile := map[string]string{}
+			err = json.Unmarshal(jsonFromFile, &confFromFile)
+			require.NoError(t, err, "unmarshalling packed config json")
+			assert.Equal(t, tc.expected, confFromFile, "config from file")
+		})
+		s.Require().NoError(deletePackedConfig(dummyCmd, false), "deleting packed config after %s", tc.name)
+	}
+}
 
 func (s *ConfigMigrationsTestSuite) TestGetNewKey() {
 	// Just some spot checking here.
