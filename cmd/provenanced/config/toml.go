@@ -2,8 +2,9 @@ package config
 
 import (
 	"bytes"
-	"os"
 	"text/template"
+
+	tmos "github.com/tendermint/tendermint/libs/os"
 )
 
 const defaultConfigTemplate = `# This is a TOML config file.
@@ -44,7 +45,5 @@ func WriteConfigToFile(configFilePath string, config *ClientConfig) {
 		panic(err)
 	}
 
-	if err := os.WriteFile(configFilePath, buffer.Bytes(), 0644); err != nil {
-		panic(err)
-	}
+	tmos.MustWriteFile(configFilePath, buffer.Bytes(), 0644)
 }
