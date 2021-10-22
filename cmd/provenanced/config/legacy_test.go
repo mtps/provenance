@@ -75,7 +75,54 @@ func (s *LegacyTestSuite) convertViperValToString(key string, val interface{}) s
 	return unquote(GetStringFromValue(reflect.ValueOf(val)))
 }
 
-func (s *LegacyTestSuite) TestPrintChangesBetween34and35() {
+type changesBetween34And35 struct {
+	Unchanged, Added, Removed, ToDashes, AsDashes []string
+	V34Types, V35Types, NonTrivial                map[string]string
+	NonTrivial34, NonTrivial35                    []string
+	TypeChanges                                   typeChanges
+}
+
+type typeChange struct {
+	key34 string
+	type34 string
+	key35 string
+	type35 string
+}
+
+func (c typeChange) String() string {
+	return fmt.Sprintf("%s %s -> %s %s", c.key34, c.type34, c.key35, c.type35)
+}
+
+type typeChanges []typeChange
+
+func (c typeChanges) V34Keys() []string {
+	rv := make([]string, len(c))
+	for i, tc := range c {
+		rv[i] = tc.key34
+	}
+	sortKeys(rv)
+	return rv
+}
+
+func (c typeChanges) V35Keys() []string {
+	rv := make([]string, len(c))
+	for i, tc := range c {
+		rv[i] = tc.key35
+	}
+	sortKeys(rv)
+	return rv
+}
+
+func stringsContains(vals []string, lookFor string) bool {
+	for _, val := range vals {
+		if val == lookFor {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *LegacyTestSuite) getChangesBetween34And35() *changesBetween34And35 {
 	v34 := v34config.DefaultConfig()
 	v35 := v35config.DefaultConfig()
 
@@ -90,12 +137,15 @@ func (s *LegacyTestSuite) TestPrintChangesBetween34and35() {
 		"tx_index.psql-conn": "tx-index.psql-conn",
 	}
 	knownChanges34 := []string{}
+	knownChanges35 := []string{}
 	knownChanges35To34 := map[string]string{}
 	for k34, k35 := range knownChanges34To35 {
 		knownChanges34 = append(knownChanges34, k34)
+		knownChanges35 = append(knownChanges35, k35)
 		knownChanges35To34[k35] = k34
 	}
 	sortKeys(knownChanges34)
+	sortKeys(knownChanges35)
 
 	v34Map := MakeFieldValueMap(v34, true)
 	v35Map := MakeFieldValueMap(v35, true)
@@ -103,9 +153,9 @@ func (s *LegacyTestSuite) TestPrintChangesBetween34and35() {
 	for _, k34 := range knownChanges34 {
 		k35 := knownChanges34To35[k34]
 		_, ok34 := v34Map[k34]
+		s.Assert().True(ok34, "known change v0.34 key [%s] not found in config", k34)
 		_, ok35 := v35Map[k35]
-		s.Assert().True(ok34, "known change v0.34 key [%s] not found", k34)
-		s.Assert().True(ok35, "known change v0.35 key [%s] not found", k35)
+		s.Assert().True(ok35, "known change v0.35 key [%s] not found in config", k35)
 	}
 
 	v34Types := map[string]string{}
@@ -116,15 +166,6 @@ func (s *LegacyTestSuite) TestPrintChangesBetween34and35() {
 	removed := []string{}
 	toDashes := []string{}
 	asDashes := []string{}
-
-	stringsContains := func(vals []string, lookFor string) bool {
-		for _, val := range vals {
-			if val == lookFor {
-				return true
-			}
-		}
-		return false
-	}
 
 	for key34 := range v34Map {
 		v34Types[key34] = v34Map[key34].Type().String()
@@ -162,6 +203,7 @@ func (s *LegacyTestSuite) TestPrintChangesBetween34and35() {
 	sortKeys(added)
 	sortKeys(removed)
 	sortKeys(toDashes)
+	sortKeys(asDashes)
 
 	toV35Key := func(key34 string) string {
 		if key35, ok := knownChanges34To35[key34]; ok {
@@ -178,7 +220,7 @@ func (s *LegacyTestSuite) TestPrintChangesBetween34and35() {
 	toCompareTypes = append(toCompareTypes, unchanged...)
 	toCompareTypes = append(toCompareTypes, toDashes...)
 	sortKeys(toCompareTypes)
-	typeChanges := []string{}
+	tChanges := []typeChange{}
 	for _, key34 := range toCompareTypes {
 		key35 := toV35Key(key34)
 		if len(key35) == 0 {
@@ -187,17 +229,55 @@ func (s *LegacyTestSuite) TestPrintChangesBetween34and35() {
 		type34 := v34Types[key34]
 		type35 := v35Types[key35]
 		if type34 != type35 {
-			typeChanges = append(typeChanges, fmt.Sprintf("%s %s -> %s %s", key34, type34, key35, type35))
+			tChanges = append(
+				tChanges,
+				typeChange{
+					key34: key34,
+					type34: type34,
+					key35: key35,
+					type35: type35,
+				})
 		}
 	}
 
-	knownChanges := make([]string, len(knownChanges34))
-	for i, key34 := range knownChanges34 {
-		knownChanges[i] = fmt.Sprintf("%s -> %s", key34, knownChanges34To35[key34])
+	return &changesBetween34And35{
+		Unchanged:    unchanged,
+		Added:        added,
+		Removed:      removed,
+		ToDashes:     toDashes,
+		AsDashes:     asDashes,
+		V34Types:     v34Types,
+		V35Types:     v35Types,
+		NonTrivial:   knownChanges34To35,
+		NonTrivial34: knownChanges34,
+		NonTrivial35: knownChanges35,
+		TypeChanges:  tChanges,
 	}
-	dashChanges := make([]string, len(toDashes))
-	for i, key34 := range toDashes {
+}
+
+func (s *LegacyTestSuite) TestCompareChangesToMigrationsVars() {
+	changes := s.getChangesBetween34And35()
+
+	s.Assert().Equal(changes.Added, addedKeys, "addedKeys")
+	s.Assert().Equal(changes.Removed, removedKeys, "removedKeys")
+	s.Assert().Equal(changes.ToDashes, toDashesKeys, "toDashesKeys")
+	s.Assert().Equal(changes.NonTrivial, changedKeys, "changedKeys")
+}
+
+func (s *LegacyTestSuite) TestPrintChangesBetween34And35() {
+	changes := s.getChangesBetween34And35()
+
+	knownChanges := make([]string, len(changes.NonTrivial34))
+	for i, key34 := range changes.NonTrivial34 {
+		knownChanges[i] = fmt.Sprintf("%s -> %s", key34, changes.NonTrivial[key34])
+	}
+	dashChanges := make([]string, len(changes.ToDashes))
+	for i, key34 := range changes.ToDashes {
 		dashChanges[i] = fmt.Sprintf("%s -> %s", key34, strings.ReplaceAll(key34, "_", "-"))
+	}
+	tChanges := make([]string, len(changes.TypeChanges))
+	for i, tc := range changes.TypeChanges {
+		tChanges[i] = tc.String()
 	}
 
 	printStrings := func(header string, vals []string) {
@@ -208,23 +288,23 @@ func (s *LegacyTestSuite) TestPrintChangesBetween34and35() {
 		fmt.Printf("\n")
 	}
 
-	printStrings("unchanged", unchanged)
-	printStrings("added", added)
-	printStrings("removed", removed)
+	printStrings("unchanged", changes.Unchanged)
+	printStrings("added", changes.Added)
+	printStrings("removed", changes.Removed)
 	printStrings("dash changes", dashChanges)
 	printStrings("non-trivial changes", knownChanges)
-	printStrings("type changes", typeChanges)
+	printStrings("type changes", tChanges)
 
 	printStringsAsVar := func(varName string, vals []string) {
 		fmt.Printf("var %s = []string{\n", varName)
 		fmt.Printf("\t\"%s\"\n", strings.Join(vals, `", "`))
 		fmt.Printf("}\n")
 	}
-	printStringsAsVar("addedKeys", added)
-	printStringsAsVar("removedKeys", removed)
-	printStringsAsVar("toDashesKeys", toDashes)
+	printStringsAsVar("addedKeys", changes.Added)
+	printStringsAsVar("removedKeys", changes.Removed)
+	printStringsAsVar("toDashesKeys", changes.ToDashes)
 	fmt.Printf("var changedKeys = map[string]string{\n")
-	for k, v := range knownChanges34To35 {
+	for k, v := range changes.NonTrivial {
 		fmt.Printf("\t\"%s\": \"%s\"\n", k, v)
 	}
 	fmt.Printf("}\n")
