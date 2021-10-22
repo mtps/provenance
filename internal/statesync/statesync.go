@@ -7,6 +7,10 @@ import (
 	tmrpctypes "github.com/tendermint/tendermint/rpc/jsonrpc/types"
 )
 
+// TODO: Overhaul this statesync stuff.
+//       I /think/ we will now need to use github.com/tendermint/tendermint/rpc/client/http
+//       The tmrpccore stuff has been moved into their internal directory, so we can't use it.
+
 func RegisterSyncStatus() {
 	tmrpccore.Routes["sync_info"] = tmrpc.NewRPCFunc(GetSyncInfoAtBlock, "height")
 }
