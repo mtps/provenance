@@ -1,17 +1,19 @@
 package config
 
 import (
-	"reflect"
+	"fmt"
 	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
-	tmconfig "github.com/tendermint/tendermint/config"
+	v34config "github.com/provenance-io/provenance/cmd/provenanced/config/legacy/tendermint_0_34/config"
+	// TODO: Once Tendermint v0.35 is fully pulled in, replace this with: tmconfig "github.com/tendermint/tendermint/config"
+	v35config "github.com/provenance-io/provenance/cmd/provenanced/config/legacy/tendermint_0_35/config"
 )
 
 var (
-	// The addedKeys, removedKeys, and toDashesKeys lists come from the output of the TestCompare34and35 test in legacy_test.go.
+	// The addedKeys, removedKeys, and toDashesKeys lists come from the output of the TestPrintChangesBetween34and35 test in legacy_test.go.
 	// Manual analysis was then done to identify the changedKeys.
 	// Each entry put into changedKeys was then removed from the addedKeys and removedKeys lists.
 
@@ -90,24 +92,31 @@ func MigrateUnpackedTMConfigTo35IfNeeded(cmd *cobra.Command, vpr *viper.Viper) e
 	}
 
 	// Create a new config and field value map for it.
-	tmConfig := tmconfig.DefaultConfig()
+	tmConfig := v35config.DefaultConfig()
 	tmConfigMap := MakeFieldValueMap(tmConfig, false)
 	removeUndesirableTmConfigEntries(tmConfigMap)
 
+	// Pull the old config out of viper.
+	oldConfig := v34config.DefaultConfig()
+	if err := vpr.Unmarshal(oldConfig); err != nil {
+		return fmt.Errorf("could not unmarshal old config from viper: %v", err)
+	}
+	oldConfigMap := MakeFieldValueMap(oldConfig, false)
+
 	// Update the new config object using the old info that was loaded into viper.
-	for newKey := range tmConfigMap {
+	for _, newKey := range tmConfigMap.GetSortedKeys() {
 		oldKey := getOldKey(newKey)
 		if len(oldKey) == 0 {
 			continue
 		}
-		oldValue := getValueStringFromViper(vpr, oldKey)
+		oldValue := unquote(oldConfigMap.GetStringOf(oldKey))
 		newValue := getMigratedValue(oldKey, oldValue)
 		err := tmConfigMap.SetFromString(newKey, newValue)
 		if err != nil {
-			return err
+			return fmt.Errorf("could not set key [%s] from string \"%s\": %v", newKey, newValue, err)
 		}
 	}
-	writeUnpackedTMConfigFile(cmd, tmConfigPath, tmConfig, false)
+	v35config.WriteConfigFile(GetHomeDir(cmd), tmConfig)
 	return loadUnpackedTMConfig(vpr, tmConfigPath)
 }
 
@@ -129,11 +138,12 @@ func MigratePackedConfigToTM35IfNeeded(cmd *cobra.Command, packedConf map[string
 		return
 	}
 
-	tmDefaults := MakeFieldValueMap(tmconfig.DefaultConfig(), false)
+	tmDefaults := MakeFieldValueMap(v35config.DefaultConfig(), false)
 	initialKeys := []string{}
 	for key := range packedConf {
 		initialKeys = append(initialKeys, key)
 	}
+	sortKeys(initialKeys)
 	for _, oldKey := range initialKeys {
 		newKey := getNewKey(oldKey)
 		if len(newKey) == 0 {
@@ -191,38 +201,6 @@ func getOldKey(newKey string) string {
 		}
 	}
 	return newKey
-}
-
-// getValueStringFromViper extracts the string representation of a key from Viper.
-// This is needed for the []string entries because viper doesn't know enough just by
-// reading a file, to know what type is expected for a value.
-func getValueStringFromViper(vpr *viper.Viper, key string) string {
-	val := vpr.Get(key)
-	switch key {
-	case "statesync.rpc-servers", "statesync.rpc_servers":
-		// This one is in the config file as a string, but the config object as a []string.
-		// The entries are comma delimited in the string.
-		valStr := val.(string)
-		stringVals := []string{}
-		if len(valStr) > 0 {
-			for _, str := range strings.Split(valStr, ",") {
-				stringVals = append(stringVals, strings.TrimSpace(str))
-			}
-		}
-		val = stringVals
-	case "rpc.cors-allowed-headers", "rpc.cors-allowed-methods", "rpc.cors-allowed-origins", "tx-index.indexer",
-	"rpc.cors_allowed_headers", "rpc.cors_allowed_methods", "rpc.cors_allowed_origins", "tx_index.indexer":
-		// These entries are all []string in both the config object and file.
-		// However, viper reads them in as []interface{}, and we need to help tell it
-		// that they are []string values.
-		valSlice := val.([]interface{})
-		stringVals := make([]string, len(valSlice))
-		for i, v := range valSlice {
-			stringVals[i] = v.(string)
-		}
-		val = stringVals
-	}
-	return unquote(GetStringFromValue(reflect.ValueOf(val)))
 }
 
 // getMigratedValue converts the oldValue to a string representation of the v0.35 data type for the oldKey field.
